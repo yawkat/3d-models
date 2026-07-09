@@ -3,6 +3,7 @@ name = "3d-models"
 uri = "https://github.com/yawkat/3d-models"
 export-filename-prefix = "3d-models"
 head-extra = '<script defer src="https://um.yawk.at/script.js" data-website-id="00fe273e-2f5a-42aa-b163-89c9b8416817"></script>'
+mode = "multi"
 
 [openscad.libraries.bosl2]
 commit = "fbcdfdd511b6abfde93c43c8f85c2bd24ee7a02d"
