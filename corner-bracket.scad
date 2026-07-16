@@ -20,9 +20,10 @@ module screw() {
     translate([0, 0, screw_depth]) cylinder(h=size, d=counterbore_diameter);
 }
 
-//rotate([-90, 0, 0])
-//rotate([0, 0, 45])
-//translate([-size / 2, -size / 2, -size / 2])
+// place on long side
+rotate([-90, 0, 0])
+rotate([0, 0, 45])
+translate([-size / 2, -size / 2, -size / 2])
 difference() {
     offset_sweep(
         path = round_corners([[0, 0], [size, 0], [0, size]], method="chamfer", cut=chamfer),
