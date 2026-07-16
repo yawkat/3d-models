@@ -13,3 +13,9 @@ file = "desiccant-box.scad"
 export-file-stem = {fixed = "desiccant-box"}
 umami-track-render = []
 umami-track-export = []
+
+[[model]]
+file = "corner-bracket.scad"
+export-file-stem = {js = "'corner-bracket-' + size"}
+umami-track-render = []
+umami-track-export = ["size"]
