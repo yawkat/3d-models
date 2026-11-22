@@ -17,13 +17,16 @@ On NixOS the OCP wheel needs libX11, libGL, libstdc++, expat and zlib on
 LD_LIBRARY_PATH.
 """
 
+import functools
 import math
 
 import cadquery as cq
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class Cup(BaseModel):
+    model_config = ConfigDict(frozen=True)  # hashable, for caching the volume solver
+
     aspect: float = Field(
         0.9, ge=0.4, le=2, multiple_of=0.05,
         description="Inner height divided by inner bottom diameter (shape of the cup)",
@@ -44,8 +47,10 @@ class Cup(BaseModel):
 
 
 class Handle(BaseModel):
-    length: float = Field(75, ge=20, le=200, multiple_of=1, description="Handle length from the cup wall in mm")
-    width_root: float = Field(14, ge=6, le=40, multiple_of=0.5, description="Handle width at the cup in mm")
+    length: float = Field(
+        50, ge=20, le=200, multiple_of=1, description="Handle length beyond the rib (or the cup wall, without rib) in mm"
+    )
+    width_root: float = Field(14, ge=6, le=40, multiple_of=0.5, description="Handle width at the cup wall in mm")
     width_tip: float = Field(20, ge=6, le=40, multiple_of=0.5, description="Handle width at the tip in mm")
     thickness: float = Field(5, ge=2, le=15, multiple_of=0.5, description="Handle thickness in mm")
     rib_width: float = Field(
@@ -67,7 +72,7 @@ class Label(BaseModel):
 
 
 class Params(BaseModel):
-    volume: float = Field(60, ge=5, le=1000, description="Capacity in ml, filled to the brim")
+    volume: float = Field(60, ge=10, le=1000, description="Capacity in ml, filled to the brim")
     cup: Cup = Field(Cup(), title="Cup")
     handle: Handle = Field(Handle(), title="Handle")
     label: Label = Field(Label(), title="Label")
@@ -91,6 +96,7 @@ def cavity(c: Cup, rb: float, extra: float = 0) -> cq.Workplane:
     return solid
 
 
+@functools.lru_cache(maxsize=16)
 def solve_bottom_radius(c: Cup, volume_ml: float) -> float:
     """Inner bottom radius for which the cavity holds `volume_ml`.
 
@@ -114,18 +120,19 @@ def solve_bottom_radius(c: Cup, volume_ml: float) -> float:
     raise ValueError(f"could not size the cup for {volume_ml:g} ml")
 
 
-def handle_outline(r1: float, r2: float, d: float) -> cq.Workplane:
-    """2D hull of a circle r1 at the origin and a circle r2 at (d, 0)."""
+def handle_outline(r1: float, x1: float, r2: float, x2: float) -> cq.Workplane:
+    """2D hull of a circle r1 at (x1, 0) and a circle r2 at (x2, 0)."""
+    d = x2 - x1
     s = (r1 - r2) / d
     c = math.sqrt(1 - s * s)
-    pts = [(r1 * s, r1 * c), (d + r2 * s, r2 * c), (d + r2 * s, -r2 * c), (r1 * s, -r1 * c)]
+    pts = [(x1 + r1 * s, r1 * c), (x2 + r2 * s, r2 * c), (x2 + r2 * s, -r2 * c), (x1 + r1 * s, -r1 * c)]
     return (
         cq.Workplane("XY")
         .moveTo(*pts[0])
         .lineTo(*pts[1])
-        .threePointArc((d + r2, 0), pts[2])
+        .threePointArc((x2 + r2, 0), pts[2])
         .lineTo(*pts[3])
-        .threePointArc((-r1, 0), pts[0])
+        .threePointArc((x1 - r1, 0), pts[0])
         .close()
     )
 
@@ -145,30 +152,51 @@ def build(p: Params) -> cq.Workplane:
     rot = rt + wall_h
     ch = c.bottom_chamfer
     if ch > 0:
-        outer_pts = [(0, 0), (rob - ch, 0), (rob + ch * tan, ch), (rot, total_h), (0, total_h)]
+        # 45° chamfer: starts `ch` inside the wall at the bed, meets the flared wall at z=zc
+        zc = ch / (1 - tan)
+        outer_pts = [(0, 0), (rob - ch, 0), (rob + zc * tan, zc), (rot, total_h), (0, total_h)]
     else:
         outer_pts = [(0, 0), (rob, 0), (rot, total_h), (0, total_h)]
     body = cq.Workplane("XZ").polyline(outer_pts).close().revolve(360, (0, 0, 0), (0, 1, 0))
 
-    if hd.hang_hole > 0 and hd.hang_hole > hd.width_tip - 6:
-        raise ValueError(f"the hang hole can be at most handle tip width - 6 mm ({hd.width_tip - 6:g} mm)")
+    if hd.thickness > total_h - c.wall - 1:
+        raise ValueError(f"the handle ({hd.thickness:g} mm) must be thinner than the cup is tall ({total_h:.1f} mm)")
+    # flat part of the handle top, inside the top fillet
+    fillet_top = min(1.5, hd.thickness / 3)
 
-    # handle, flat on the bed
-    tip_x = rob + hd.length - hd.width_tip / 2
-    handle = handle_outline(hd.width_root / 2, hd.width_tip / 2, tip_x).extrude(hd.thickness)
-    handle = handle.faces(">Z").edges().fillet(min(1.5, hd.thickness / 3))
+    # rib: a triangle standing on the handle, leaning against the cup wall, 45° slope.
+    # It stays one wall thickness below the rim so it doesn't touch the rim fillet.
+    has_rib = hd.rib_width > 0 and hd.rib_height > 0
+    rib_top = hd.thickness + (total_h - c.wall - hd.thickness) * hd.rib_height
+    x_wall_top = rob + rib_top * tan - 0.5  # slightly inside the wall for a clean union
+    rise = rib_top - hd.thickness
+    # where the rib's footprint on the handle ends (or the wall, at handle top height)
+    rib_end = x_wall_top + rise if has_rib else rob + hd.thickness * tan
+
+    # handle, flat on the bed; a hull of a circle centred on the wall and one at the tip
+    tip_x = rib_end + hd.length - hd.width_tip / 2
+    r1, r2 = hd.width_root / 2, hd.width_tip / 2
+    if tip_x - rob <= abs(r1 - r2) + 1:
+        raise ValueError("the handle is too short for its width; make it longer")
+
+    def handle_width(x: float) -> float:
+        return hd.width_root + (hd.width_tip - hd.width_root) * (x - rob) / (tip_x - rob)
+
+    if has_rib and hd.rib_width > min(hd.width_root, handle_width(rib_end)) - 2 * fillet_top:
+        raise ValueError("the rib is wider than the handle; reduce the rib width")
+    if hd.hang_hole > 0:
+        if hd.hang_hole > hd.width_tip - 6:
+            raise ValueError(f"the hang hole can be at most handle tip width - 6 mm ({hd.width_tip - 6:g} mm)")
+        if tip_x - hd.hang_hole / 2 < rib_end + 2:
+            raise ValueError("the hang hole doesn't fit beyond the rib; make the handle longer")
+
+    handle = handle_outline(r1, rob, r2, tip_x).extrude(hd.thickness)
+    handle = handle.faces(">Z").edges().fillet(fillet_top)
     if ch > 0:
         handle = handle.faces("<Z").edges().chamfer(min(ch, hd.thickness / 4))
     body = body.union(handle)
 
-    # rib: a triangle standing on the handle, leaning against the cup wall, 45° slope.
-    # It stays one wall thickness below the rim so it doesn't touch the rim fillet.
-    rib_end = rob  # where the rib's footprint on the handle ends
-    if hd.rib_width > 0 and hd.rib_height > 0 and total_h - c.wall > hd.thickness:
-        rib_top = hd.thickness + (total_h - c.wall - hd.thickness) * hd.rib_height
-        x_wall_top = rob + rib_top * tan - 0.5  # slightly inside the wall for a clean union
-        rise = rib_top - hd.thickness
-        rib_end = x_wall_top + rise
+    if has_rib:
         rib = (
             cq.Workplane("XZ")
             .polyline([(rob - 0.5, hd.thickness - 0.01), (rib_end, hd.thickness - 0.01), (x_wall_top, rib_top)])
@@ -201,6 +229,8 @@ def build(p: Params) -> cq.Workplane:
                 f"label {text!r} ({bb.xlen:.1f} mm) doesn't fit on the handle "
                 f"({max(label_end - label_start, 0):.1f} mm free); make the handle longer or the font smaller"
             )
+        if bb.ylen > min(handle_width(bb.xmin), handle_width(bb.xmax)) - 2 * fillet_top:
+            raise ValueError(f"label {text!r} is wider than the handle; make the font smaller")
         body = body.union(emboss)
 
     if not body.val().isValid() or len(body.solids().vals()) != 1:
