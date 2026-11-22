@@ -8,6 +8,16 @@ mode = "multi"
 [openscad.libraries.bosl2]
 commit = "fbcdfdd511b6abfde93c43c8f85c2bd24ee7a02d"
 
+[cadquery]
+# uv project (pyproject.toml + uv.lock) with the CadQuery models' dependencies
+project = "."
+# OCP.wasm reduced to the modules CadQuery uses (https://github.com/yawkat/ocp-wasm-cadquery)
+ocp-wheel = { url = "https://github.com/yawkat/ocp-wasm-cadquery/releases/download/7.9.3.1-cadquery2.8.0-2/cadquery_ocp_novtk_ocp_wasm-7.9.3.1%2Bcadquery2.8.0-cp314-cp314-pyemscripten_2026_0_wasm32.whl", sha256 = "c49006b18d598a764240ffc562de13415a5de5710ab1941befdee24143d59298" }
+# Finer tessellation than the default (0.1 mm / 0.2 rad) for smooth curved surfaces in the
+# preview and STL export
+tolerance = 0.05
+angular-tolerance = 0.08
+
 [[model]]
 file = "desiccant-box.scad"
 export-file-stem = {fixed = "desiccant-box"}
@@ -19,3 +29,19 @@ file = "corner-bracket.scad"
 export-file-stem = {js = "'corner-bracket-' + size"}
 umami-track-render = []
 umami-track-export = ["size"]
+
+[[model]]
+file = "measuring-scoop.py"
+runtime = "cadquery"
+export-file-stem = {js = "'measuring-scoop-' + volume + 'ml'"}
+umami-track-render = []
+umami-track-export = ["volume"]
+
+[model.tab-metadata."Label"]
+control-boolean = "label.show"
+
+[model.param-metadata."label.*"]
+display-condition = {js = "label.show"}
+
+[model.param-metadata."label.show"]
+display-condition = {fixed = false}

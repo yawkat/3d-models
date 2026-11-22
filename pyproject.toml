@@ -1,0 +1,12 @@
+[project]
+name = "3d-models"
+version = "0.1.0"
+description = "Dependencies of the CadQuery models"
+requires-python = ">=3.11"
+dependencies = [
+    "cadquery==2.8.0",
+    "pydantic>=2",
+]
+
+[tool.uv]
+package = false
