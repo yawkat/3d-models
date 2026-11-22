@@ -1,1 +1,4 @@
 *.json
+out/
+.venv/
+__pycache__/
